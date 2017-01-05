@@ -3,7 +3,7 @@
 #include <avr/power.h>
 #endif
 
-#define PIN 6
+#define PIN 17
 
 // Parameter 1 = number of pixels in strip
 // Parameter 2 = Arduino pin number (most are valid)
@@ -19,20 +19,22 @@ Adafruit_NeoPixel strip = Adafruit_NeoPixel( 150, PIN, NEO_GRB + NEO_KHZ800 );
 // pixel power leads, add 300 - 500 Ohm resistor on first pixel's data input
 // and minimize distance between Arduino and first pixel.  Avoid connecting
 // on a live circuit...if you must, connect GND first.
+typedef enum color_mode_t
+{
+    MODE_CHRISTMAS,
+    MODE_WHITE,
+    MODE_BLUE,
+} color_mode_t;
 
-// Display blue and white or red and green?
-bool blueWhiteMode = true;
-
-// Automatically cycle between light patterns
-bool automaticMode = true;
+uint8_t colorMode = MODE_WHITE;
+bool automaticMode = false;
 
 #define AUTOMATIC_CYCLE_INTERVAL_SEC 30
 #define BRIGHTENING 0
 
 typedef enum cmd_t
 {
-    FADE = 0,
-    BLINK,
+    BLINK = 0,
     THEATER,
     SOLID,
     TWINKLE,
@@ -44,6 +46,7 @@ typedef enum cmd_t
     TOGGLE_BLUE = 104,
     BLUE_MODE = 105,
     RED_MODE = 106,
+    WHITE_MODE = 107,
     MAX_CMDS,
 } cmd_t;
 
@@ -54,25 +57,19 @@ typedef struct current_status_t
     uint8_t pixelId;
     uint8_t offCount;
     uint8_t currentOffCount;
-    uint8_t brightness;
+    int brightness;
     uint8_t color;
     uint8_t currDirection;
 } current_status_t;
 
 
-uint8_t currentPattern = FADE;
+uint8_t currentPattern = TWINKLE;
 
 // Has the pattern JUST changed?
 bool patternChanged = false;
 
 void setup()
 {
-    // This is for Trinket 5V 16MHz, you can remove these three lines if you are not using a Trinket
-//  #if defined (__AVR_ATtiny85__)
-//    if (F_CPU == 16000000) clock_prescale_set(clock_div_1);
-//  #endif
-    // End of trinket special code
-
     Serial.begin( 9600 ); // USB is always 12 Mbit/sec
     Serial2.begin( 9600 );
     randomSeed( analogRead( 0 ) );
@@ -83,6 +80,11 @@ void setup()
 
 void processSerial()
 {
+  static int callCount = 0;
+  callCount++;
+
+  if( callCount % 10 == 0)
+  {
     while( Serial2.available() > 0 )
     {
         char c = Serial2.read();
@@ -91,7 +93,6 @@ void processSerial()
 
         switch( c )
         {
-            case FADE:
             case BLINK:
             case THEATER:
             case SOLID:
@@ -118,20 +119,21 @@ void processSerial()
             case BRIGHTNESS_HIGH:
                 strip.setBrightness( 255 );
                 break;
-
-            case TOGGLE_BLUE:
-                blueWhiteMode = !blueWhiteMode;
-                break;
             
             case BLUE_MODE:
-                blueWhiteMode = true;
+                colorMode = MODE_BLUE;
                 break;
             
             case RED_MODE:
-                blueWhiteMode = false;
+                colorMode = MODE_CHRISTMAS;
+                break;
+                
+            case WHITE_MODE:
+                colorMode = MODE_WHITE;
                 break;
         }
     }
+  }
 }
 
 
@@ -168,11 +170,6 @@ bool stopPattern()
             {
                 Serial.print( "Switching pattern: " );
                 currentPattern = ( currentPattern + 1 ) % NUM_PATTERNS;
-
-                if( currentPattern == 0 )
-                {
-                  blueWhiteMode = !blueWhiteMode;
-                }
                 Serial.println( currentPattern );
                 lastPatternTime = millis();
                 retVal = true;
@@ -192,28 +189,24 @@ void loop()
 
     switch( currentPattern )
     {
-        case FADE:
-            christmasFade( 1 );
-            break;
-
         case BLINK:
-            christmasBlink( 500 );
+            blink( 500 );
             break;
 
         case THEATER:
-            christmasTheaterChase( 50 );
+            theaterChase( 50 );
             break;
 
         case SOLID:
-            christmasSolid( 10 );
+            solid( 10 );
             break;
 
         case TWINKLE:
-            christmasTwinkle( 1, 60, 1000 );
+            twinkle( 10, 60, 1000 );
             break;
 
         default:
-            christmasFade( 1 );
+            twinkle( 10,60,1000 );
             break;
     }
 }
@@ -252,9 +245,10 @@ uint8_t getRandomPixelId( current_status_t *statusArr, uint8_t nElements )
     return id;
 }
 
-void christmasTwinkle( uint8_t wait, uint8_t nPixels, uint8_t maxOffTime )
+void twinkle( uint8_t wait, uint8_t nPixels, uint8_t maxOffTime )
 {
-    bool randomPixels = true;
+    bool randomPixels = false;
+    nPixels = strip.numPixels();
 
     // Turn off all the pixels
     for( int i = 0; i < strip.numPixels(); i++ )
@@ -264,12 +258,13 @@ void christmasTwinkle( uint8_t wait, uint8_t nPixels, uint8_t maxOffTime )
 
     strip.show();
 
-    if( nPixels == strip.numPixels() )
-    {
-        randomPixels = true;
-    }
+//    if( nPixels != strip.numPixels() )
+//    {
+//        randomPixels = true;
+//    }
 
     current_status_t status[nPixels];
+
 
     // Initialize
     for( int i = 0; i < nPixels; i++ )
@@ -307,9 +302,13 @@ void christmasTwinkle( uint8_t wait, uint8_t nPixels, uint8_t maxOffTime )
                 if( status[j].currentOffCount >= status[j].offCount )
                 {
                     // Start making it brighter
-                    status[j].pixelId = getRandomPixelId( status, nPixels );
-                    status[j].brightness++;
+                    if( randomPixels)
+                    {
+                      status[j].pixelId = getRandomPixelId( status, nPixels );
+                    }
+                    status[j].brightness+=5;
                     status[j].currDirection = BRIGHTENING;
+                    status[j].color = random( 0, 2 );
                     status[j].currentOffCount = 0;
                 }
             }
@@ -318,25 +317,39 @@ void christmasTwinkle( uint8_t wait, uint8_t nPixels, uint8_t maxOffTime )
                 // Brighten light
                 if( status[j].currDirection == BRIGHTENING )
                 {
+                    status[j].brightness+=5;
+                    
                     if( status[j].brightness >= 255 )
                     {
+                        status[j].brightness = 255;
                         status[j].currDirection = !BRIGHTENING;
-                    }
-                    else
-                    {
-                        status[j].brightness++;
                     }
                 }
                 // Dim light
                 else
                 {
-                    status[j].brightness--;
+                    status[j].brightness-=5;
+
+                    if( status[j].brightness < 0 )
+                    {
+                      status[j].brightness = 0;
+                    }
                 }
             }
 
-            if( blueWhiteMode )
+            if(j == 0 )
+            {
+              Serial.print("Brightness: ");
+              Serial.println(status[j].brightness);
+            }
+
+            if( colorMode == MODE_BLUE )
             {
                 strip.setPixelColor( status[j].pixelId, ( status[j].color == 0 ) ? status[j].brightness : 0, ( status[j].color == 0 ) ? status[j].brightness : 0, status[j].brightness );
+            }
+            else if( colorMode == MODE_WHITE )
+            {
+                strip.setPixelColor( status[j].pixelId, status[j].brightness, status[j].brightness, status[j].brightness );
             }
             else
             {
@@ -355,7 +368,7 @@ void christmasTwinkle( uint8_t wait, uint8_t nPixels, uint8_t maxOffTime )
 // Just sit there in solid mode
 // TODO no reason to keep setting color
 // Just need to stop sometimes to check for new serial data
-void christmasSolid( uint8_t wait )
+void solid( uint8_t wait )
 {
     uint16_t i, j;
 
@@ -364,9 +377,13 @@ void christmasSolid( uint8_t wait )
         for( i = 0; i < strip.numPixels(); i++ )
         {
 
-            if( blueWhiteMode )
+            if( colorMode == MODE_BLUE )
             {
                 strip.setPixelColor( i, ( i % 2 == 0 ) ? 255 : 0, ( i % 2 == 0 ) ? 255 : 0, 255 );
+            }
+            else if( colorMode == MODE_WHITE )
+            {
+              strip.setPixelColor( i, ( i % 2 == 0 ) ? 255 : 0, ( i % 2 == 0 ) ? 255 : 0, ( i % 2 == 0 ) ? 255 : 0 );
             }
             else
             {
@@ -381,7 +398,7 @@ void christmasSolid( uint8_t wait )
 }
 
 //Theatre-style crawling lights.
-void christmasTheaterChase( uint8_t wait )
+void theaterChase( uint8_t wait )
 {
     while( !stopPattern() )
     {
@@ -391,9 +408,13 @@ void christmasTheaterChase( uint8_t wait )
 
             for ( uint16_t i = 0; i < strip.numPixels(); i = i + 3 )
             {
-                if( blueWhiteMode )
+                if( colorMode == MODE_BLUE )
                 {
                     strip.setPixelColor( i + q, color1 ? 255 : 0, color1 ? 255 : 0, 255 ); //turn every third pixel on
+                }
+                else if( colorMode == MODE_WHITE )
+                {
+                    strip.setPixelColor( i + q, 255, 255, 255 ); //turn every third pixel on
                 }
                 else
                 {
@@ -416,77 +437,10 @@ void christmasTheaterChase( uint8_t wait )
     }
 }
 
-// Lights fade, alternating between two colors
-// For example, lights will start alternating red and green (pixel 0 == red, pixel 1 == gren)
-// Slowly, pixel 0 will fade to green and pixel 2 will fade to red
-// And on and on...
-void christmasFade( uint8_t wait )
-{
-    uint16_t i, j;
-    bool direction = false;
-    int level1 = 255;
-    int level2 = 0;
-
-    j = 0;
-
-    while( !stopPattern() )
-    {
-
-        for( i = 0; i < strip.numPixels(); i++ )
-        {
-            if( blueWhiteMode )
-            {
-                strip.setPixelColor( i, ( i % 2 == 0 ) ? level1 : level2, ( i % 2 == 0 ) ? level1 : level2, 255 );
-            }
-            else
-            {
-                strip.setPixelColor( i, ( i % 2 == 0 ) ? level1 : level2, ( i % 2 == 0 ) ? level2 : level1, 0 );
-            }
-
-        }
-
-        strip.show();
-
-        if( direction )
-        {
-            level1++;
-        }
-        else
-        {
-            level1--;
-        }
-
-        level2 = 255 - level1;
-
-        //Serial.print(level1);
-        //Serial.print(" ");
-        //Serial.println(level2);
-
-        if( level2 == 255 || level1 == 255 )
-        {
-            for( int i = 0; ( i < 5000 ) && ( !stopPattern ); i++ )
-            {
-                processSerial();
-                delay( 1 );
-            }
-        }
-
-        delay( wait );
-        processSerial();
-
-        if( j == 254 )
-        {
-            direction = !direction;
-            j = 0;
-        }
-
-        j++;
-    }
-}
 
 // Flash wildly
 // Might be cool to randomly choose the pixel color
-void christmasBlink( uint8_t wait )
+void blink( uint8_t wait )
 {
     uint16_t i, j;
 
@@ -494,9 +448,13 @@ void christmasBlink( uint8_t wait )
     {
         for( i = 0; i < strip.numPixels(); i++ )
         {
-            if( blueWhiteMode )
+            if( colorMode == MODE_BLUE )
             {
                 strip.setPixelColor( i, ( i % 2 == 0 ) ? 255 : 0, ( i % 2 == 0 ) ? 255 : 0, 255 );
+            }
+            else if( colorMode == MODE_WHITE )
+            {
+                strip.setPixelColor( i, 255, 255, 255 );
             }
             else
             {
